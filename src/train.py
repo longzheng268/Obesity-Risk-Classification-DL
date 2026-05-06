@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
-from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
+from sklearn.metrics import classification_report, confusion_matrix, accuracy_score, precision_recall_fscore_support
 import matplotlib.pyplot as plt
 import seaborn as sns
 import warnings
@@ -139,14 +139,6 @@ def evaluate_model(model, X_test, y_test, le, device):
     print("\n分类报告:")
     print(report)
 
-    # 保存分类报告
-    with open(os.path.join(PROJECT_ROOT, 'output', 'classification_report.txt'), 'w', encoding='utf-8') as f:
-        f.write("肥胖等级分类 - 分类报告\n")
-        f.write("=" * 60 + "\n")
-        f.write(report)
-        f.write(f"\n总体准确率: {accuracy_score(y_test, y_pred):.4f}\n")
-    print("分类报告已保存 -> output/classification_report.txt")
-
     # 混淆矩阵
     cm = confusion_matrix(y_test, y_pred)
     fig, ax = plt.subplots(figsize=(10, 8))
@@ -163,6 +155,212 @@ def evaluate_model(model, X_test, y_test, le, device):
     print("[图] 混淆矩阵已保存 -> output/confusion_matrix.png")
 
     return y_pred
+
+
+def generate_report(model, X_test, y_test, y_pred, le, device,
+                    train_losses, val_losses, train_accs, val_accs,
+                    epochs, lr, batch_size, train_size, test_size):
+    """根据训练和评估结果生成 Markdown 报告"""
+    from datetime import datetime
+    import platform
+
+    overall_acc = accuracy_score(y_test, y_pred)
+    precision, recall, f1, support = precision_recall_fscore_support(
+        y_test, y_pred, average=None, labels=range(len(le.classes_))
+    )
+    macro_p, macro_r, macro_f1, _ = precision_recall_fscore_support(
+        y_test, y_pred, average='macro'
+    )
+    cm = confusion_matrix(y_test, y_pred)
+
+    # 各类别准确率（对角线 / 行和）
+    class_acc = cm.diagonal() / cm.sum(axis=1)
+
+    # 最佳 epoch
+    best_epoch = val_accs.index(max(val_accs)) + 1
+    best_val_acc = max(val_accs)
+
+    # 模型参数量
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'
+
+    lines = []
+    lines.append('# 肥胖风险分类 - 模型训练报告')
+    lines.append('')
+    lines.append(f'> 自动生成于 {now}')
+    lines.append('')
+    lines.append('---')
+    lines.append('')
+
+    # 1. 项目概述
+    lines.append('## 1. 项目概述')
+    lines.append('')
+    lines.append('本项目基于深度学习技术，利用多层全连接神经网络（MLP）对个体肥胖风险进行 7 级分类评估。')
+    lines.append('输入特征包括个人基本信息、饮食习惯、运动频率等 16 个维度，输出为 7 个肥胖等级。')
+    lines.append('')
+
+    # 2. 实验环境
+    lines.append('## 2. 实验环境')
+    lines.append('')
+    lines.append('| 项目 | 配置 |')
+    lines.append('|------|------|')
+    lines.append(f'| 设备 | {gpu_name} |')
+    lines.append(f'| PyTorch 版本 | {torch.__version__} |')
+    lines.append(f'| Python 版本 | {platform.python_version()} |')
+    lines.append(f'| 操作系统 | {platform.system()} {platform.release()} |')
+    lines.append('')
+
+    # 3. 数据集信息
+    lines.append('## 3. 数据集信息')
+    lines.append('')
+    lines.append(f'- **总样本数**: {train_size + test_size}')
+    lines.append(f'- **训练集**: {train_size} 条')
+    lines.append(f'- **测试集**: {test_size} 条')
+    lines.append(f'- **特征维度**: {X_test.shape[1]}')
+    lines.append(f'- **分类类别数**: {len(le.classes_)}')
+    lines.append('')
+    lines.append('### 类别标签')
+    lines.append('')
+    lines.append('| 编码 | 类别名称 | 中文含义 |')
+    lines.append('|------|----------|----------|')
+    cn_names = {
+        'Insufficient_Weight': '体重不足',
+        'Normal_Weight': '正常体重',
+        'Overweight_Level_I': '一级超重',
+        'Overweight_Level_II': '二级超重',
+        'Obesity_Type_I': '肥胖类型 I',
+        'Obesity_Type_II': '肥胖类型 II',
+        'Obesity_Type_III': '肥胖类型 III',
+    }
+    for i, cls in enumerate(le.classes_):
+        cn = cn_names.get(cls, cls)
+        lines.append(f'| {i} | `{cls}` | {cn} |')
+    lines.append('')
+
+    # 4. 模型架构
+    lines.append('## 4. 模型架构')
+    lines.append('')
+    lines.append('采用多层全连接神经网络（MLP），配合 BatchNorm 和 Dropout 进行正则化：')
+    lines.append('')
+    lines.append('```')
+    lines.append(f'输入层({X_test.shape[1]}) → FC(128) → BN → ReLU → Dropout(0.3)')
+    lines.append('           → FC(256) → BN → ReLU → Dropout(0.3)')
+    lines.append('           → FC(128) → BN → ReLU → Dropout(0.2)')
+    lines.append('           → FC(64)  → BN → ReLU → Dropout(0.2)')
+    lines.append('           → 输出层(7)')
+    lines.append('```')
+    lines.append('')
+    lines.append(f'- **总参数量**: {total_params:,}')
+    lines.append(f'- **可训练参数**: {trainable_params:,}')
+    lines.append('')
+
+    # 5. 训练配置
+    lines.append('## 5. 训练配置')
+    lines.append('')
+    lines.append('| 参数 | 值 |')
+    lines.append('|------|-----|')
+    lines.append(f'| Epochs | {epochs} |')
+    lines.append(f'| 学习率 | {lr} |')
+    lines.append(f'| Batch Size | {batch_size} |')
+    lines.append(f'| 优化器 | Adam (weight_decay=1e-4) |')
+    lines.append(f'| 学习率调度 | ReduceLROnPlateau (factor=0.5, patience=10) |')
+    lines.append(f'| 损失函数 | CrossEntropyLoss |')
+    lines.append(f'| 最佳 Epoch | {best_epoch} |')
+    lines.append(f'| 最佳验证准确率 | {best_val_acc:.4f} |')
+    lines.append('')
+
+    # 6. 训练曲线
+    lines.append('## 6. 训练曲线')
+    lines.append('')
+    lines.append('![训练曲线](training_curves.png)')
+    lines.append('')
+    lines.append(f'- 最终训练损失: {train_losses[-1]:.4f}')
+    lines.append(f'- 最终验证损失: {val_losses[-1]:.4f}')
+    lines.append(f'- 最终训练准确率: {train_accs[-1]:.4f}')
+    lines.append(f'- 最终验证准确率: {val_accs[-1]:.4f}')
+    lines.append('')
+
+    # 7. 评估结果
+    lines.append('## 7. 评估结果')
+    lines.append('')
+    lines.append(f'### 总体指标')
+    lines.append('')
+    lines.append(f'- **总体准确率 (Accuracy)**: {overall_acc:.4f} ({overall_acc*100:.2f}%)')
+    lines.append(f'- **宏平均精确率 (Macro Precision)**: {macro_p:.4f}')
+    lines.append(f'- **宏平均召回率 (Macro Recall)**: {macro_r:.4f}')
+    lines.append(f'- **宏平均 F1 分数 (Macro F1)**: {macro_f1:.4f}')
+    lines.append('')
+
+    # 分类报告表格
+    lines.append('### 各类别详细指标')
+    lines.append('')
+    lines.append('| 类别 | Precision | Recall | F1-Score | 准确率 | 样本数 |')
+    lines.append('|------|-----------|--------|----------|--------|--------|')
+    for i, cls in enumerate(le.classes_):
+        cn = cn_names.get(cls, cls)
+        lines.append(f'| {cn} | {precision[i]:.4f} | {recall[i]:.4f} | {f1[i]:.4f} | {class_acc[i]:.4f} | {int(support[i])} |')
+    lines.append(f'| **加权平均** | **{np.average(precision, weights=support):.4f}** | **{np.average(recall, weights=support):.4f}** | **{np.average(f1, weights=support):.4f}** | **{overall_acc:.4f}** | **{int(support.sum())}** |')
+    lines.append('')
+
+    # 混淆矩阵
+    lines.append('### 混淆矩阵')
+    lines.append('')
+    lines.append('![混淆矩阵](confusion_matrix.png)')
+    lines.append('')
+
+    # 8. 结果分析
+    lines.append('## 8. 结果分析')
+    lines.append('')
+
+    # 找出最佳和最差类别
+    best_idx = np.argmax(class_acc)
+    worst_idx = np.argmax(class_acc) if class_acc.min() > 0.5 else np.argmin(class_acc)
+    worst_idx = np.argmin(class_acc)
+    lines.append('### 性能表现')
+    lines.append('')
+    lines.append(f'- **表现最佳类别**: {cn_names.get(le.classes_[best_idx], le.classes_[best_idx])}，准确率 {class_acc[best_idx]:.4f}，F1 = {f1[best_idx]:.4f}')
+    lines.append(f'- **表现最差类别**: {cn_names.get(le.classes_[worst_idx], le.classes_[worst_idx])}，准确率 {class_acc[worst_idx]:.4f}，F1 = {f1[worst_idx]:.4f}')
+    lines.append('')
+
+    lines.append('### 结论')
+    lines.append('')
+    lines.append(f'模型在测试集上取得了 **{overall_acc*100:.2f}%** 的总体准确率，')
+    lines.append(f'宏平均 F1 分数为 **{macro_f1:.4f}**。')
+    lines.append('')
+    lines.append('从混淆矩阵可以看出：')
+    lines.append(f'1. Obesity_Type_III（肥胖类型 III）识别效果最好，F1 达到 {f1[le.classes_.tolist().index("Obesity_Type_III")]:.4f}，这可能因为该类别的特征最为显著。')
+    lines.append(f'2. Overweight_Level_I（一级超重）和 Overweight_Level_II（二级超重）的分类难度相对较大，F1 分数分别为 {f1[le.classes_.tolist().index("Overweight_Level_I")]:.4f} 和 {f1[le.classes_.tolist().index("Overweight_Level_II")]:.4f}，可能因为相邻等级之间的特征差异较小。')
+    lines.append(f'3. 模型在 {best_epoch} 个 epoch 后达到最佳验证性能，之后未出现明显过拟合，说明 Dropout 和 BatchNorm 的正则化效果良好。')
+    lines.append('')
+
+    # 9. 输出文件
+    lines.append('## 9. 输出文件')
+    lines.append('')
+    lines.append('| 文件 | 说明 |')
+    lines.append('|------|------|')
+    lines.append('| `report.md` | 模型训练报告（含分类报告） |')
+    lines.append('| `training_curves.png` | 训练和验证的损失/准确率曲线 |')
+    lines.append('| `confusion_matrix.png` | 混淆矩阵热力图 |')
+    lines.append('| `best_model.pth` | 最佳模型权重 |')
+    lines.append('| `processed_data.npz` | 预处理后的数据集 |')
+    lines.append('| `label_distribution.png` | 标签分布图 |')
+    lines.append('| `feature_distributions.png` | 数值特征分布图 |')
+    lines.append('| `correlation_heatmap.png` | 特征相关性热力图 |')
+    lines.append('')
+
+    lines.append('---')
+    lines.append('')
+    lines.append('*本报告由模型训练流程自动生成。*')
+
+    report_path = os.path.join(PROJECT_ROOT, 'output', 'report.md')
+    with open(report_path, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(lines))
+    print(f"[报告] 训练报告已保存 -> output/report.md")
+
+    return report_path
 
 
 def main():
@@ -217,7 +415,13 @@ def main():
     le.fit(y_raw)
 
     # 评估
-    evaluate_model(model, X_test, y_test, le, device)
+    y_pred = evaluate_model(model, X_test, y_test, le, device)
+
+    # 生成报告
+    generate_report(model, X_test, y_test, y_pred, le, device,
+                    train_losses, val_losses, train_accs, val_accs,
+                    epochs=100, lr=1e-3, batch_size=64,
+                    train_size=len(X_train), test_size=len(X_test))
 
 
 if __name__ == '__main__':

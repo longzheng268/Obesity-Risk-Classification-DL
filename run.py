@@ -1,11 +1,13 @@
 """
 肥胖等级分类 - 一键运行脚本
+使用方法: conda activate obesity-risk && python run.py
 """
 import subprocess
 import sys
 import os
 
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
+
 
 def main():
     steps = [

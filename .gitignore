@@ -185,3 +185,7 @@ cython_debug/
 
 # claude
 .claude/
+
+# Output - only ignore binary data files
+output/*.npz
+output/*.pth
